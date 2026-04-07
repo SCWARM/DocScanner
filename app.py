@@ -12,8 +12,8 @@ from typing import List
 # This is the very first thing Streamlit needs — sets the browser tab title,
 # icon, and tells it to use the full screen width instead of a narrow column.
 st.set_page_config(
-    page_title="834 Enrollment Extractor",
-    page_icon="🏥",
+    page_title="834 Enrollment info",
+    page_icon="",
     layout="wide"
 )
 
@@ -44,9 +44,6 @@ st.divider()
 
 # =============================================================================
 # DATA MODELS
-# These Pydantic classes define exactly what fields we want the AI to extract.
-# Think of them as a template: the AI reads the form and fills in this template.
-# If a field is missing on the form, it defaults to "N/A".
 # =============================================================================
 
 class Dependent(BaseModel):
@@ -82,9 +79,6 @@ class Form834(BaseModel):
 
 # =============================================================================
 # AI CLIENT
-# We use Google Gemini as our AI model, accessed through the OpenAI-compatible
-# API. The `instructor` library wraps it so the AI returns structured data
-# (our Form834 object) instead of plain text.
 # =============================================================================
 
 def get_client(api_key: str):
@@ -121,7 +115,6 @@ def pdf_to_images(file_bytes: bytes) -> List[str]:
 
 # =============================================================================
 # EXTRACTION
-# This is the core function. It:
 # 1. Checks if the file is a digital PDF (has text) or a scanned image
 # 2. Sends the content to Gemini AI with a clear prompt
 # 3. Gets back a structured Form834 object with all the fields filled in
@@ -240,12 +233,12 @@ def generate_excel(df: pd.DataFrame) -> bytes:
 
 # =============================================================================
 # SIDEBAR — API KEY + INSTRUCTIONS
-# The sidebar is always visible on the left. We ask for the API key here
+# The sidebar is always visible on the left. ask for the API key here
 # so it never gets hardcoded into the script or accidentally shared.
 # =============================================================================
 
 with st.sidebar:
-    st.header("⚙️ Setup")
+    st.header("Setup")
     api_key = st.text_input("Gemini API Key", type="password", placeholder="Paste your key here...")
     st.markdown("[Get a free key →](https://aistudio.google.com/app/apikey)")
     st.divider()
@@ -295,10 +288,10 @@ st.divider()
 if run:
     # Validate inputs before doing anything
     if not api_key:
-        st.warning("⚠️ Please enter your Gemini API Key in the sidebar.")
+        st.warning("Please enter your Gemini API Key in the sidebar.")
         st.stop()
     if not uploaded_files:
-        st.warning("⚠️ Please upload at least one file.")
+        st.warning("Please upload at least one file.")
         st.stop()
 
     client  = get_client(api_key)
@@ -337,22 +330,22 @@ if run:
         df = pd.DataFrame(records)
 
         # Success banner
-        st.success(f"✅ Done! Extracted **{len(records)} row(s)** from **{len(uploaded_files) - len(failed)} file(s)**.")
+        st.success(f"Done! Extracted **{len(records)} row(s)** from **{len(uploaded_files) - len(failed)} file(s)**.")
 
         if failed:
-            st.warning(f"⚠️ {len(failed)} file(s) could not be processed: {', '.join(failed)}")
+            st.warning(f" {len(failed)} file(s) could not be processed: {', '.join(failed)}")
 
         # Data preview
-        st.subheader("📊 Extracted Data Preview")
+        st.subheader(" Extracted Data Preview")
         st.dataframe(df, use_container_width=True, height=300)
 
         # Per-file summary
-        with st.expander("📁 Per-file breakdown"):
+        with st.expander(" Per-file breakdown"):
             summary = df.groupby("Source File").size().reset_index(name="Rows extracted")
             st.dataframe(summary, use_container_width=True)
 
         # Download button
-        st.subheader("📥 Download")
+        st.subheader("Download")
         st.download_button(
             label="Download Excel File",
             data=generate_excel(df),
