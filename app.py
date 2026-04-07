@@ -38,8 +38,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-st.title("🏥 834 Enrollment Form Extractor")
-st.caption("Upload scanned 834 PDFs or images — AI reads them and builds your Excel table automatically.")
+st.title("834 Enrollment info")
+st.caption("Upload scanned 834 PDFs or images and build your Excel table automatically.")
 st.divider()
 
 # =============================================================================
