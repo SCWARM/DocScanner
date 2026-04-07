@@ -9,18 +9,8 @@ from pydantic import BaseModel, Field
 from typing import List
 
 # ── Page setup ────────────────────────────────────────────────────────────────
-# This is the very first thing Streamlit needs — sets the browser tab title,
-# icon, and tells it to use the full screen width instead of a narrow column.
-st.set_page_config(
-    page_title="834 Enrollment info",
-    page_icon="",
-    layout="wide"
-)
+st.set_page_config(page_title="834 Enrollment Extractor", page_icon="🏥", layout="wide")
 
-# ── Custom styling ─────────────────────────────────────────────────────────────
-# Streamlit lets you inject raw CSS. This makes the app look more professional:
-# - hides the default Streamlit menu and footer
-# - styles the upload box and the download button
 st.markdown("""
 <style>
     #MainMenu, footer { visibility: hidden; }
@@ -30,16 +20,11 @@ st.markdown("""
         border-radius: 8px; padding: 10px 20px;
         font-size: 16px; width: 100%;
     }
-    .metric-card {
-        background: #f0f4ff; border-radius: 10px;
-        padding: 20px; text-align: center;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ─────────────────────────────────────────────────────────────────────
-st.title("834 Enrollment info")
-st.caption("Upload scanned 834 PDFs or images and build your Excel table automatically.")
+st.title("🏥 834 Enrollment Form Extractor")
+st.caption("Upload scanned 834 PDFs or images — AI reads them and builds your Excel tables automatically.")
 st.divider()
 
 # =============================================================================
@@ -78,6 +63,19 @@ class Form834(BaseModel):
     dependents:  List[Dependent]    = Field(default_factory=list)
 
 # =============================================================================
+# ID GENERATOR
+# Employees get sequential IDs: C001, C002, C003 ...
+# Each dependent gets the employee ID + their position index:
+#   Employee C009 → dependents C0091, C0092, C0093 ...
+# =============================================================================
+
+def make_employee_id(counter: int) -> str:
+    return f"C{counter:03d}"          # C001, C002 ... C999
+
+def make_dependent_id(employee_id: str, dep_index: int) -> str:
+    return f"{employee_id}{dep_index}"  # C0091, C0092 ...
+
+# =============================================================================
 # AI CLIENT
 # =============================================================================
 
@@ -92,10 +90,6 @@ def get_client(api_key: str):
 
 # =============================================================================
 # FILE READING HELPERS
-# Two functions to handle different types of input:
-# 1. read_pdf_text — fast path for digital PDFs that have a real text layer
-# 2. pdf_to_images — for scanned PDFs, we convert each page to an image
-#    so the AI can "see" it visually (vision mode)
 # =============================================================================
 
 def read_pdf_text(file_bytes: bytes) -> str:
@@ -115,9 +109,6 @@ def pdf_to_images(file_bytes: bytes) -> List[str]:
 
 # =============================================================================
 # EXTRACTION
-# 1. Checks if the file is a digital PDF (has text) or a scanned image
-# 2. Sends the content to Gemini AI with a clear prompt
-# 3. Gets back a structured Form834 object with all the fields filled in
 # =============================================================================
 
 PROMPT = (
@@ -130,13 +121,11 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
     ext  = filename.lower().rsplit(".", 1)[-1]
     text = read_pdf_text(file_bytes) if ext == "pdf" else ""
 
-    # Route A: digital PDF — send the text directly (faster + cheaper)
     if len(text.strip()) > 50:
         messages = [
             {"role": "system", "content": PROMPT},
             {"role": "user",   "content": text}
         ]
-    # Route B: scanned PDF or image — send as base64 images for vision
     else:
         images = pdf_to_images(file_bytes) if ext == "pdf" else [base64.b64encode(file_bytes).decode()]
         if not images:
@@ -158,110 +147,137 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
         return None
 
 # =============================================================================
-# FLATTEN TO ROWS
-# The AI returns one Form834 object per document.
-# But a subscriber with 3 dependents needs 3 Excel rows.
-# This function "flattens" the nested structure into flat rows:
-#   - subscriber info repeats on every row
-#   - each row gets a different dependent's info
+# SPLIT INTO TWO TABLES
+#
+# Instead of one flat table, we now produce two separate tables:
+#
+# EMPLOYEES TABLE — one row per file/subscriber
+#   Columns: Employee ID | Source File | First Name | Last Name | SSN | ...
+#
+# DEPENDENTS TABLE — one row per dependent
+#   Columns: Dependent ID | Employee ID | First Name | Last Name | Relationship | ...
+#
+# The Employee ID links the two tables together (like a foreign key in a database).
+# Example:
+#   Employee:  C009 | Mitchell, James | ...
+#   Dependent: C0091 | C009 | Sarah | Mitchell | Spouse
+#   Dependent: C0092 | C009 | Oliver | Mitchell | Child
+#   Dependent: C0093 | C009 | Emma | Mitchell | Child
 # =============================================================================
 
-def to_rows(form: Form834, filename: str) -> List[dict]:
-    coverages = " | ".join(
-        f"{c.coverage_type}: {c.plan_selected} ({c.coverage_tier})"
-        for c in form.coverages if c.coverage_type != "N/A"
-    ) or "N/A"
+def build_tables(forms_with_files: list) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Takes a list of (Form834, filename) tuples.
+    Returns (employees_df, dependents_df).
+    """
+    employee_rows  = []
+    dependent_rows = []
 
-    base = {
-        "Source File": filename,
-        "First Name":  form.first_name,
-        "Last Name":   form.last_name,
-        "SSN":         form.ssn,
-        "DOB":         form.dob,
-        "Gender":      form.gender,
-        "Phone":       form.phone,
-        "Email":       form.email,
-        "Address":     form.address,
-        "City":        form.city,
-        "State":       form.state,
-        "Zip":         form.zip_code,
-        "Job Title":   form.job_title,
-        "Department":  form.department,
-        "Hire Date":   form.hire_date,
-        "Coverages":   coverages,
-    }
+    for counter, (form, filename) in enumerate(forms_with_files, start=1):
+        emp_id = make_employee_id(counter)
 
-    deps = [d for d in form.dependents if d.first_name != "N/A"]
-    if deps:
-        rows = []
-        for d in deps:
-            row = base.copy()
-            row.update({
-                "Dep. First Name":   d.first_name,
-                "Dep. Last Name":    d.last_name,
-                "Dep. Relationship": d.relationship,
-                "Dep. DOB":          d.dob,
-                "Dep. SSN":          d.ssn,
-                "Dep. Gender":       d.gender,
+        # Coverage summary string
+        coverages = " | ".join(
+            f"{c.coverage_type}: {c.plan_selected} ({c.coverage_tier})"
+            for c in form.coverages if c.coverage_type != "N/A"
+        ) or "N/A"
+
+        # ── One employee row ──────────────────────────────────────────────────
+        employee_rows.append({
+            "Employee ID":  emp_id,
+            "Source File":  filename,
+            "First Name":   form.first_name,
+            "Last Name":    form.last_name,
+            "SSN":          form.ssn,
+            "DOB":          form.dob,
+            "Gender":       form.gender,
+            "Phone":        form.phone,
+            "Email":        form.email,
+            "Address":      form.address,
+            "City":         form.city,
+            "State":        form.state,
+            "Zip":          form.zip_code,
+            "Job Title":    form.job_title,
+            "Department":   form.department,
+            "Hire Date":    form.hire_date,
+            "Coverages":    coverages,
+        })
+
+        # ── One row per dependent ─────────────────────────────────────────────
+        valid_deps = [d for d in form.dependents if d.first_name != "N/A"]
+        for i, dep in enumerate(valid_deps, start=1):
+            dep_id = make_dependent_id(emp_id, i)   # C0091, C0092 ...
+            dependent_rows.append({
+                "Dependent ID":  dep_id,
+                "Employee ID":   emp_id,             # foreign key back to employee
+                "First Name":    dep.first_name,
+                "Last Name":     dep.last_name,
+                "Relationship":  dep.relationship,
+                "DOB":           dep.dob,
+                "SSN":           dep.ssn,
+                "Gender":        dep.gender,
             })
-            rows.append(row)
-        return rows
-    else:
-        base.update({k: "N/A" for k in [
-            "Dep. First Name", "Dep. Last Name", "Dep. Relationship",
-            "Dep. DOB", "Dep. SSN", "Dep. Gender"
-        ]})
-        return [base]
+
+    employees_df  = pd.DataFrame(employee_rows)
+    dependents_df = pd.DataFrame(dependent_rows) if dependent_rows else pd.DataFrame(
+        columns=["Dependent ID", "Employee ID", "First Name", "Last Name",
+                 "Relationship", "DOB", "SSN", "Gender"]
+    )
+
+    return employees_df, dependents_df
 
 # =============================================================================
-# EXCEL GENERATOR
-# Converts the pandas DataFrame into an Excel file stored in memory (BytesIO).
-# We never write to disk — everything lives in RAM so the user can
-# download it directly from the browser.
+# EXCEL GENERATOR — two sheets in one file
 # =============================================================================
 
-def generate_excel(df: pd.DataFrame) -> bytes:
+def generate_excel(employees_df: pd.DataFrame, dependents_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="834 Enrollments")
-        ws = writer.sheets["834 Enrollments"]
-        ws.freeze_panes = "A2"
-        for col in ws.columns:
+        # Sheet 1: Employees
+        employees_df.to_excel(writer, index=False, sheet_name="Employees")
+        ws_emp = writer.sheets["Employees"]
+        ws_emp.freeze_panes = "A2"
+        for col in ws_emp.columns:
             width = max(len(str(c.value or "")) for c in col)
-            ws.column_dimensions[col[0].column_letter].width = min(width + 2, 50)
+            ws_emp.column_dimensions[col[0].column_letter].width = min(width + 2, 50)
+
+        # Sheet 2: Dependents
+        dependents_df.to_excel(writer, index=False, sheet_name="Dependents")
+        ws_dep = writer.sheets["Dependents"]
+        ws_dep.freeze_panes = "A2"
+        for col in ws_dep.columns:
+            width = max(len(str(c.value or "")) for c in col)
+            ws_dep.column_dimensions[col[0].column_letter].width = min(width + 2, 50)
+
     return output.getvalue()
 
 # =============================================================================
-# SIDEBAR — API KEY + INSTRUCTIONS
-# The sidebar is always visible on the left. ask for the API key here
-# so it never gets hardcoded into the script or accidentally shared.
+# SIDEBAR
 # =============================================================================
 
 with st.sidebar:
-    st.header("Setup")
+    st.header("⚙️ Setup")
     api_key = st.text_input("Gemini API Key", type="password", placeholder="Paste your key here...")
     st.markdown("[Get a free key →](https://aistudio.google.com/app/apikey)")
     st.divider()
     st.markdown("""
+    **How it works:**
+    1. Each uploaded form becomes one **Employee** row with a unique ID (C001, C002...)
+    2. Each dependent gets its own row in the **Dependents** sheet, linked back to the employee by ID (C0011, C0012...)
+    3. Both sheets are in the same Excel file
+
+    **Supported formats:** PDF, PNG, JPG
+
     **How to use:**
-    1. Paste your Gemini API key above
-    2. Upload your 834 PDF or image files
-    3. Click **Extract Data**
-    4. Preview the results on screen
-    5. Download the Excel file
-
-    **Supported formats:**
-    - PDF (scanned or digital)
-    - PNG, JPG, JPEG
-
-    **Notes:**
-    - One row per dependent per subscriber
-    - Missing fields show as N/A
-    - Up to 10 pages per PDF
+    1. Paste your API key above
+    2. Upload your 834 forms
+    3. Click Extract Data
+    4. Preview both tables
+    5. Download Excel
     """)
 
 # =============================================================================
-# MAIN AREA — FILE UPLOAD + PROCESSING
+# MAIN UI
 # =============================================================================
 
 uploaded_files = st.file_uploader(
@@ -271,7 +287,6 @@ uploaded_files = st.file_uploader(
     help="You can upload multiple files at once"
 )
 
-# Show file count badge once files are uploaded
 if uploaded_files:
     st.info(f"📎 {len(uploaded_files)} file(s) ready — click Extract Data when ready.")
 
@@ -282,73 +297,76 @@ with col2:
 st.divider()
 
 # =============================================================================
-# PROCESSING — runs when the button is clicked
+# PROCESSING
 # =============================================================================
 
 if run:
-    # Validate inputs before doing anything
     if not api_key:
-        st.warning("Please enter your Gemini API Key in the sidebar.")
+        st.warning("⚠️ Please enter your Gemini API Key in the sidebar.")
         st.stop()
     if not uploaded_files:
-        st.warning("Please upload at least one file.")
+        st.warning("⚠️ Please upload at least one file.")
         st.stop()
 
-    client  = get_client(api_key)
-    records = []
-    failed  = []
+    client          = get_client(api_key)
+    forms_with_files = []
+    failed          = []
 
-    # Summary metrics at the top
     m1, m2, m3 = st.columns(3)
     m1.metric("Files uploaded", len(uploaded_files))
-    status_placeholder  = m2.empty()
-    records_placeholder = m3.empty()
+    status_metric = m2.empty()
+    rows_metric   = m3.empty()
 
     progress = st.progress(0, text="Starting...")
 
-    # Process each file one by one
     for i, uploaded_file in enumerate(uploaded_files):
         filename   = uploaded_file.name
         file_bytes = uploaded_file.read()
 
         progress.progress((i + 1) / len(uploaded_files), text=f"Processing {filename}...")
-        status_placeholder.metric("Processing", f"{i+1} / {len(uploaded_files)}")
+        status_metric.metric("Processing", f"{i+1} / {len(uploaded_files)}")
 
         form = extract(file_bytes, filename, client)
-
         if form:
-            new_rows = to_rows(form, filename)
-            records.extend(new_rows)
-            records_placeholder.metric("Rows extracted", len(records))
+            forms_with_files.append((form, filename))
+            rows_metric.metric("Forms extracted", len(forms_with_files))
         else:
             failed.append(filename)
 
     progress.empty()
 
     # ── Results ────────────────────────────────────────────────────────────────
-    if records:
-        df = pd.DataFrame(records)
+    if forms_with_files:
+        employees_df, dependents_df = build_tables(forms_with_files)
 
-        # Success banner
-        st.success(f"Done! Extracted **{len(records)} row(s)** from **{len(uploaded_files) - len(failed)} file(s)**.")
+        st.success(f"✅ Done! **{len(employees_df)} employee(s)** and **{len(dependents_df)} dependent(s)** extracted.")
 
         if failed:
-            st.warning(f" {len(failed)} file(s) could not be processed: {', '.join(failed)}")
+            st.warning(f"⚠️ Could not process: {', '.join(failed)}")
 
-        # Data preview
-        st.subheader(" Extracted Data Preview")
-        st.dataframe(df, use_container_width=True, height=300)
+        # Preview both tables side by side
+        tab1, tab2 = st.tabs([f"👤 Employees ({len(employees_df)} rows)", f"👨‍👩‍👧 Dependents ({len(dependents_df)} rows)"])
 
-        # Per-file summary
-        with st.expander(" Per-file breakdown"):
-            summary = df.groupby("Source File").size().reset_index(name="Rows extracted")
-            st.dataframe(summary, use_container_width=True)
+        with tab1:
+            st.dataframe(employees_df, use_container_width=True, height=300)
 
-        # Download button
-        st.subheader("Download")
+        with tab2:
+            st.dataframe(dependents_df, use_container_width=True, height=300)
+
+            # Show how dependents link back to employees
+            if not dependents_df.empty:
+                with st.expander("🔗 How the IDs connect"):
+                    link_df = dependents_df[["Dependent ID", "Employee ID", "First Name", "Last Name", "Relationship"]].copy()
+                    emp_names = employees_df[["Employee ID", "First Name", "Last Name"]].rename(
+                        columns={"First Name": "Emp. First", "Last Name": "Emp. Last"}
+                    )
+                    link_df = link_df.merge(emp_names, on="Employee ID", how="left")
+                    st.dataframe(link_df, use_container_width=True)
+
+        st.subheader("📥 Download")
         st.download_button(
-            label="Download Excel File",
-            data=generate_excel(df),
+            label="Download Excel File (2 sheets)",
+            data=generate_excel(employees_df, dependents_df),
             file_name="master_834_database.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
