@@ -258,7 +258,7 @@ if st.button("Extract Data", type="primary"):
     failed  = []
     progress = st.progress(0)
 
-for i, f in enumerate(uploaded_files):
+    for i, f in enumerate(uploaded_files):
         with st.spinner(f"Processing {f.name}..."):
             form = extract(f.read(), f.name, client)
             
