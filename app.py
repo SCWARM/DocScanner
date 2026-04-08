@@ -29,6 +29,7 @@ st.divider()
 # =============================================================================
 
 class Dependent(BaseModel):
+    employee_id: str = Field(default="N/A", description="The Employee ID, Subscriber ID, or Member ID")
     first_name:   str = "N/A"
     last_name:    str = "N/A"
     relationship: str = "N/A"
@@ -86,9 +87,9 @@ def get_client(api_key: str):
 
 PROMPT = (
     "Extract only the fields that a customer filled in by hand or typing on this "
-    "834 enrollment form - personal info, contact details, employment, coverage "
-    "selections, and dependents. Use 'N/A' for anything blank or missing."
-) 
+    "834 enrollment form - specifically the Employee/Subscriber ID, personal info, contact details, "
+    "employment, coverage selections, and dependents. Use 'N/A' for anything blank or missing."
+)
 
 def read_pdf_text(file_bytes: bytes) -> str:
     try:
