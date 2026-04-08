@@ -126,7 +126,7 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
 
     try:
         return client.chat.completions.create(
-            model="gemini-2.5-flash",
+            model="gemini-1.5-flash-8b", 
             response_model=Form834,
             messages=messages,
             max_retries=2
