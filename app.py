@@ -1,6 +1,7 @@
 import streamlit as st
 import io
 import base64
+import time
 import pandas as pd
 import fitz
 import instructor
@@ -8,11 +9,13 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 from typing import List
 
-st.set_page_config(page_title="834 Enrollment Extractor", layout="wide")
+# --- FIX 1: Forced the sidebar to be expanded by default
+st.set_page_config(page_title="834 Enrollment Extractor", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    #MainMenu, footer, header { visibility: hidden; }
+    /* --- FIX 1: Removed 'header' from this list so the toggle button appears --- */
+    #MainMenu, footer { visibility: hidden; } 
     .block-container { padding-top: 2rem; }
     h1 { font-size: 1.6rem; font-weight: 600; }
     .stTabs [data-baseweb="tab"] { font-size: 0.9rem; }
@@ -41,6 +44,8 @@ class CoverageLine(BaseModel):
     coverage_tier: str = Field(default="N/A", description="Employee Only, EE+Spouse, EE+Child, Family")
 
 class Form834(BaseModel):
+    # --- FIX 2: Added the employee_id property directly to the main form ---
+    employee_id: str = Field(default="N/A", description="The Employee ID, Subscriber ID, or Member ID")
     first_name:  str = "N/A"
     last_name:   str = "N/A"
     ssn:         str = "N/A"
@@ -59,18 +64,6 @@ class Form834(BaseModel):
     dependents:  List[Dependent]    = Field(default_factory=list)
 
 # =============================================================================
-# ID GENERATION
-# Employees: C001, C002, C003 ...
-# Dependents: C0011, C0012, C0021 ... (employee ID + dependent index)
-# =============================================================================
-
-def employee_id(n: int) -> str:
-    return f"C{n:03d}"
-
-def dependent_id(emp_id: str, i: int) -> str:
-    return f"{emp_id}{i}"
-
-# =============================================================================
 # AI
 # =============================================================================
 
@@ -85,14 +78,16 @@ def get_client(api_key: str):
 
 PROMPT = (
     "Extract only the fields that a customer filled in by hand or typing on this "
-    "834 enrollment form — personal info, contact details, employment, coverage "
-    "selections, and dependents. Use 'N/A' for anything blank or missing."
+    "834 enrollment form — specifically the Employee/Subscriber ID, personal info, contact details, "
+    "employment, coverage selections, and dependents. Use 'N/A' for anything blank or missing."
 )
 
 def read_pdf_text(file_bytes: bytes) -> str:
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            return "".join(p.get_text() for p in doc)
+            raw_text = "".join(p.get_text() for p in doc)
+            # --- FIX 3: Re-added text sanitization to prevent the ASCII Em-Dash crash ---
+            return raw_text.encode("ascii", errors="ignore").decode("ascii")
     except Exception:
         return ""
 
@@ -127,7 +122,7 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
             model="gemini-2.5-flash",
             response_model=Form834,
             messages=messages,
-            max_retries=2
+            max_retries=5 # Increased to 5 to protect against Google 503 errors
         )
     except Exception as e:
         st.error(f"Extraction failed for {filename}: {e}")
@@ -142,7 +137,8 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
     dep_rows = []
 
     for n, (form, filename) in enumerate(forms, start=1):
-        eid = employee_id(n)
+        # --- FIX 2: Uses the real ID extracted from the document ---
+        eid = form.employee_id
 
         coverages = " | ".join(
             f"{c.coverage_type}: {c.plan_selected} ({c.coverage_tier})"
@@ -171,7 +167,8 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         for i, dep in enumerate([d for d in form.dependents if d.first_name != "N/A"], start=1):
             dep_rows.append({
-                "Dependent ID": dependent_id(eid, i),
+                # --- FIX 2: Appends the dependent number to the real Employee ID ---
+                "Dependent ID": f"{eid}-{i}",
                 "Employee ID":  eid,
                 "First Name":   dep.first_name,
                 "Last Name":    dep.last_name,
@@ -216,13 +213,13 @@ with st.sidebar:
     st.markdown("""
 **Output structure**
 
-Each uploaded form produces one row in the **Employees** sheet with a unique ID (C001, C002...).
+Each uploaded form produces one row in the **Employees** sheet with the extracted ID.
 
 Each dependent is a separate row in the **Dependents** sheet, linked to their employee by ID:
 
-- Employee `C001`
-- Dependent 1 → `C0011`
-- Dependent 2 → `C0012`
+- Employee `12345`
+- Dependent 1 → `12345-1`
+- Dependent 2 → `12345-2`
 
 **Supported files:** PDF, PNG, JPG
     """)
@@ -262,7 +259,13 @@ if st.button("Extract Data", type="primary"):
             forms.append((form, f.name))
         else:
             failed.append(f.name)
+        
         progress.progress((i + 1) / len(uploaded_files))
+        
+        # --- FIX 4: Rate limit throttle so Google doesn't block you on the free tier ---
+        if i < len(uploaded_files) - 1:
+            st.toast("Pacing API... pausing 15 seconds to prevent rate limits.")
+            time.sleep(15)
 
     progress.empty()
 
