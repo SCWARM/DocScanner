@@ -79,8 +79,8 @@ def dependent_id(emp_id: str, i: int) -> str:
 def get_client(api_key: str):
     return instructor.from_openai(
         OpenAI(
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=api_key
+            base_url="http://localhost:11434/v1", 
+            api_key="ollama", 
         ),
         mode=instructor.Mode.JSON,
     )
@@ -128,10 +128,10 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
 
     try:
         return client.chat.completions.create(
-            model="gemini-2.5-flash", 
+            model="llama3.2-vision", # <--- The free local model
             response_model=Form834,
             messages=messages,
-            max_retries=5             
+            max_retries=1            # <--- No server limits to worry about!
         )
     except Exception as e:
         st.error(f"Extraction failed for {filename}: {e}")
