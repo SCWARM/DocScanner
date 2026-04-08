@@ -4,7 +4,6 @@ import base64
 import pandas as pd
 import fitz
 import instructor
-import time
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from typing import List
@@ -29,7 +28,6 @@ st.divider()
 # =============================================================================
 
 class Dependent(BaseModel):
-    employee_id: str = Field(default="N/A", description="The Employee ID, Subscriber ID, or Member ID")
     first_name:   str = "N/A"
     last_name:    str = "N/A"
     relationship: str = "N/A"
@@ -79,24 +77,22 @@ def dependent_id(emp_id: str, i: int) -> str:
 def get_client(api_key: str):
     return instructor.from_openai(
         OpenAI(
-            base_url="http://localhost:11434/v1", 
-            api_key="ollama", 
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=api_key
         ),
         mode=instructor.Mode.JSON,
     )
 
 PROMPT = (
     "Extract only the fields that a customer filled in by hand or typing on this "
-    "834 enrollment form - specifically the Employee/Subscriber ID, personal info, contact details, "
-    "employment, coverage selections, and dependents. Use 'N/A' for anything blank or missing."
+    "834 enrollment form — personal info, contact details, employment, coverage "
+    "selections, and dependents. Use 'N/A' for anything blank or missing."
 )
 
 def read_pdf_text(file_bytes: bytes) -> str:
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            raw_text = "".join(p.get_text() for p in doc)
-            # Sanitize the text: strip out weird hidden PDF typography characters
-            return raw_text.encode("ascii", errors="ignore").decode("ascii")
+            return "".join(p.get_text() for p in doc)
     except Exception:
         return ""
 
@@ -128,10 +124,10 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
 
     try:
         return client.chat.completions.create(
-            model="llama3.2-vision", # <--- The free local model
+            model="gemini-2.5-flash",
             response_model=Form834,
             messages=messages,
-            max_retries=1            # <--- No server limits to worry about!
+            max_retries=2
         )
     except Exception as e:
         st.error(f"Extraction failed for {filename}: {e}")
@@ -146,9 +142,7 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
     dep_rows = []
 
     for n, (form, filename) in enumerate(forms, start=1):
-        # Grab the real ID extracted by the AI!
-        # If it didn't find one, it will default to "N/A"
-        eid = form.employee_id 
+        eid = employee_id(n)
 
         coverages = " | ".join(
             f"{c.coverage_type}: {c.plan_selected} ({c.coverage_tier})"
@@ -177,8 +171,7 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         for i, dep in enumerate([d for d in form.dependents if d.first_name != "N/A"], start=1):
             dep_rows.append({
-                # Adds a clean hyphen (e.g., ID8923-1, ID8923-2)
-                "Dependent ID": f"{eid}-{i}", 
+                "Dependent ID": dependent_id(eid, i),
                 "Employee ID":  eid,
                 "First Name":   dep.first_name,
                 "Last Name":    dep.last_name,
@@ -265,20 +258,12 @@ if st.button("Extract Data", type="primary"):
     for i, f in enumerate(uploaded_files):
         with st.spinner(f"Processing {f.name}..."):
             form = extract(f.read(), f.name, client)
-            
         if form:
             forms.append((form, f.name))
         else:
             failed.append(f.name)
-            
         progress.progress((i + 1) / len(uploaded_files))
-        
-        # --- THE THROTTLE ---
-        # If this isn't the last file, wait 15 seconds to avoid Google's Free Tier limit
-        if i < len(uploaded_files) - 1:
-            st.toast("Pacing API... pausing 15 seconds to prevent rate limits.")
-            time.sleep(15)
-            
+
     progress.empty()
 
     if not forms:
