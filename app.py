@@ -85,14 +85,16 @@ def get_client(api_key: str):
 
 PROMPT = (
     "Extract only the fields that a customer filled in by hand or typing on this "
-    "834 enrollment form — personal info, contact details, employment, coverage "
+    "834 enrollment form - personal info, contact details, employment, coverage "
     "selections, and dependents. Use 'N/A' for anything blank or missing."
-)
+) 
 
 def read_pdf_text(file_bytes: bytes) -> str:
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            return "".join(p.get_text() for p in doc)
+            raw_text = "".join(p.get_text() for p in doc)
+            # Sanitize the text: strip out weird hidden PDF typography characters
+            return raw_text.encode("ascii", errors="ignore").decode("ascii")
     except Exception:
         return ""
 
