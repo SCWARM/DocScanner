@@ -4,6 +4,7 @@ import base64
 import pandas as pd
 import fitz
 import instructor
+import time
 from openai import OpenAI
 from pydantic import BaseModel, Field
 from typing import List
@@ -126,10 +127,10 @@ def extract(file_bytes: bytes, filename: str, client) -> Form834 | None:
 
     try:
         return client.chat.completions.create(
-            model="gemini-1.5-flash-8b", 
+            model="gemini-2.5-flash", 
             response_model=Form834,
             messages=messages,
-            max_retries=2
+            max_retries=5             
         )
     except Exception as e:
         st.error(f"Extraction failed for {filename}: {e}")
@@ -257,15 +258,23 @@ if st.button("Extract Data", type="primary"):
     failed  = []
     progress = st.progress(0)
 
-    for i, f in enumerate(uploaded_files):
+for i, f in enumerate(uploaded_files):
         with st.spinner(f"Processing {f.name}..."):
             form = extract(f.read(), f.name, client)
+            
         if form:
             forms.append((form, f.name))
         else:
             failed.append(f.name)
+            
         progress.progress((i + 1) / len(uploaded_files))
-
+        
+        # --- THE THROTTLE ---
+        # If this isn't the last file, wait 15 seconds to avoid Google's Free Tier limit
+        if i < len(uploaded_files) - 1:
+            st.toast("Pacing API... pausing 15 seconds to prevent rate limits.")
+            time.sleep(15)
+            
     progress.empty()
 
     if not forms:
