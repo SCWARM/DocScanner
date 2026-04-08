@@ -146,7 +146,9 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
     dep_rows = []
 
     for n, (form, filename) in enumerate(forms, start=1):
-        eid = employee_id(n)
+        # Grab the real ID extracted by the AI!
+        # If it didn't find one, it will default to "N/A"
+        eid = form.employee_id 
 
         coverages = " | ".join(
             f"{c.coverage_type}: {c.plan_selected} ({c.coverage_tier})"
@@ -175,7 +177,8 @@ def build_tables(forms: list) -> tuple[pd.DataFrame, pd.DataFrame]:
 
         for i, dep in enumerate([d for d in form.dependents if d.first_name != "N/A"], start=1):
             dep_rows.append({
-                "Dependent ID": dependent_id(eid, i),
+                # Adds a clean hyphen (e.g., ID8923-1, ID8923-2)
+                "Dependent ID": f"{eid}-{i}", 
                 "Employee ID":  eid,
                 "First Name":   dep.first_name,
                 "Last Name":    dep.last_name,
